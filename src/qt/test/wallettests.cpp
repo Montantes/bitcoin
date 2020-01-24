@@ -1,3 +1,7 @@
+// Copyright (c) 2015-2019 The Bitcoin Core developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
 #include <qt/test/wallettests.h>
 #include <qt/test/util.h>
 
@@ -134,6 +138,7 @@ void TestGUI(interfaces::Node& node)
         test.CreateAndProcessBlock({}, GetScriptForRawPubKey(test.coinbaseKey.GetPubKey()));
     }
     node.context()->connman = std::move(test.m_node.connman);
+    node.context()->mempool = std::move(test.m_node.mempool);
     std::shared_ptr<CWallet> wallet = std::make_shared<CWallet>(node.context()->chain.get(), WalletLocation(), WalletDatabase::CreateMock());
     bool firstRun;
     wallet->LoadWallet(firstRun);
@@ -169,6 +174,16 @@ void TestGUI(interfaces::Node& node)
     RemoveWallet(wallet);
     sendCoinsDialog.setModel(&walletModel);
     transactionView.setModel(&walletModel);
+
+    {
+        // Check balance in send dialog
+        QLabel* balanceLabel = sendCoinsDialog.findChild<QLabel*>("labelBalance");
+        QString balanceText = balanceLabel->text();
+        int unit = walletModel.getOptionsModel()->getDisplayUnit();
+        CAmount balance = walletModel.wallet().getBalance();
+        QString balanceComparison = BitcoinUnits::formatWithUnit(unit, balance, false, BitcoinUnits::separatorAlways);
+        QCOMPARE(balanceText, balanceComparison);
+    }
 
     // Send two transactions, and verify they are added to transaction list.
     TransactionTableModel* transactionTableModel = walletModel.getTransactionTableModel();

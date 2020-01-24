@@ -1,4 +1,4 @@
-// Copyright (c) 2011-2019 The Bitcoin Core developers
+// Copyright (c) 2011-2020 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -341,6 +341,7 @@ void BitcoinGUI::createActions()
     m_close_wallet_action->setStatusTip(tr("Close wallet"));
 
     m_create_wallet_action = new QAction(tr("Create Wallet..."), this);
+    m_create_wallet_action->setEnabled(false);
     m_create_wallet_action->setStatusTip(tr("Create a new wallet"));
 
     showHelpMessageAction = new QAction(tr("&Command-line options"), this);
@@ -618,6 +619,7 @@ void BitcoinGUI::setWalletController(WalletController* wallet_controller)
 
     m_wallet_controller = wallet_controller;
 
+    m_create_wallet_action->setEnabled(true);
     m_open_wallet_action->setEnabled(true);
     m_open_wallet_action->setMenu(m_open_wallet_menu);
 
@@ -632,10 +634,10 @@ void BitcoinGUI::setWalletController(WalletController* wallet_controller)
 void BitcoinGUI::addWallet(WalletModel* walletModel)
 {
     if (!walletFrame) return;
+    if (!walletFrame->addWallet(walletModel)) return;
     const QString display_name = walletModel->getDisplayName();
     setWalletActionsEnabled(true);
     rpcConsole->addWallet(walletModel);
-    walletFrame->addWallet(walletModel);
     m_wallet_selector->addItem(display_name, QVariant::fromValue(walletModel));
     if (m_wallet_selector->count() == 2) {
         m_wallet_selector_label_action->setVisible(true);
@@ -657,6 +659,8 @@ void BitcoinGUI::removeWallet(WalletModel* walletModel)
     rpcConsole->removeWallet(walletModel);
     walletFrame->removeWallet(walletModel);
     updateWindowTitle();
+    labelWalletHDStatusIcon->hide();
+    labelWalletEncryptionIcon->hide();
 }
 
 void BitcoinGUI::setCurrentWallet(WalletModel* wallet_model)
@@ -1207,7 +1211,7 @@ void BitcoinGUI::setHDStatus(bool privkeyDisabled, int hdEnabled)
 {
     labelWalletHDStatusIcon->setPixmap(platformStyle->SingleColorIcon(privkeyDisabled ? ":/icons/eye" : hdEnabled ? ":/icons/hd_enabled" : ":/icons/hd_disabled").pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
     labelWalletHDStatusIcon->setToolTip(privkeyDisabled ? tr("Private key <b>disabled</b>") : hdEnabled ? tr("HD key generation is <b>enabled</b>") : tr("HD key generation is <b>disabled</b>"));
-
+    labelWalletHDStatusIcon->show();
     // eventually disable the QLabel to set its opacity to 50%
     labelWalletHDStatusIcon->setEnabled(hdEnabled);
 }

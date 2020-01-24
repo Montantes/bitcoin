@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2018 The Bitcoin Core developers
+// Copyright (c) 2009-2020 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -58,6 +58,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <set>
 
 #ifndef WIN32
 #include <attributes.h>
@@ -171,7 +172,7 @@ void Interrupt(NodeContext& node)
 void Shutdown(NodeContext& node)
 {
     LogPrintf("%s: In progress...\n", __func__);
-    static CCriticalSection cs_Shutdown;
+    static RecursiveMutex cs_Shutdown;
     TRY_LOCK(cs_Shutdown, lockShutdown);
     if (!lockShutdown)
         return;
@@ -196,8 +197,6 @@ void Shutdown(NodeContext& node)
     // using the other before destroying them.
     if (node.peer_logic) UnregisterValidationInterface(node.peer_logic.get());
     if (node.connman) node.connman->Stop();
-    if (g_txindex) g_txindex->Stop();
-    ForEachBlockFilterIndex([](BlockFilterIndex& index) { index.Stop(); });
 
     StopTorControl();
 
@@ -211,8 +210,6 @@ void Shutdown(NodeContext& node)
     node.peer_logic.reset();
     node.connman.reset();
     node.banman.reset();
-    g_txindex.reset();
-    DestroyAllBlockFilterIndexes();
 
     if (::mempool.IsLoaded() && gArgs.GetArg("-persistmempool", DEFAULT_PERSIST_MEMPOOL)) {
         DumpMempool(::mempool);
@@ -244,6 +241,14 @@ void Shutdown(NodeContext& node)
     // After there are no more peers/RPC left to give us new data which may generate
     // CValidationInterface callbacks, flush them...
     GetMainSignals().FlushBackgroundCallbacks();
+
+    // Stop and delete all indexes only after flushing background callbacks.
+    if (g_txindex) {
+        g_txindex->Stop();
+        g_txindex.reset();
+    }
+    ForEachBlockFilterIndex([](BlockFilterIndex& index) { index.Stop(); });
+    DestroyAllBlockFilterIndexes();
 
     // Any future callbacks will be dropped. This should absolutely be safe - if
     // missing a callback results in an unrecoverable situation, unclean shutdown
@@ -281,9 +286,9 @@ void Shutdown(NodeContext& node)
     node.chain_clients.clear();
     UnregisterAllValidationInterfaces();
     GetMainSignals().UnregisterBackgroundSignalScheduler();
-    GetMainSignals().UnregisterWithMempoolSignals(mempool);
     globalVerifyHandle.reset();
     ECC_Stop();
+    if (node.mempool) node.mempool = nullptr;
     LogPrintf("%s: done\n", __func__);
 }
 
@@ -497,7 +502,7 @@ void SetupServerArgs()
     gArgs.AddArg("-logtimestamps", strprintf("Prepend debug output with timestamp (default: %u)", DEFAULT_LOGTIMESTAMPS), ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
     gArgs.AddArg("-logthreadnames", strprintf("Prepend debug output with name of the originating thread (only available on platforms supporting thread_local) (default: %u)", DEFAULT_LOGTHREADNAMES), ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
     gArgs.AddArg("-logtimemicros", strprintf("Add microsecond precision to debug timestamps (default: %u)", DEFAULT_LOGTIMEMICROS), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::DEBUG_TEST);
-    gArgs.AddArg("-mocktime=<n>", "Replace actual time with <n> seconds since epoch (default: 0)", ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::DEBUG_TEST);
+    gArgs.AddArg("-mocktime=<n>", "Replace actual time with " + UNIX_EPOCH_TIME + " (default: 0)", ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::DEBUG_TEST);
     gArgs.AddArg("-maxsigcachesize=<n>", strprintf("Limit sum of signature cache and script execution cache sizes to <n> MiB (default: %u)", DEFAULT_MAX_SIG_CACHE_SIZE), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::DEBUG_TEST);
     gArgs.AddArg("-maxtipage=<n>", strprintf("Maximum tip age in seconds to consider node in initial block download (default: %u)", DEFAULT_MAX_TIP_AGE), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::DEBUG_TEST);
     gArgs.AddArg("-printpriority", strprintf("Log transaction fee per kB when mining blocks (default: %u)", DEFAULT_PRINTPRIORITY), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::DEBUG_TEST);
@@ -516,7 +521,7 @@ void SetupServerArgs()
     gArgs.AddArg("-minrelaytxfee=<amt>", strprintf("Fees (in %s/kB) smaller than this are considered zero fee for relaying, mining and transaction creation (default: %s)",
         CURRENCY_UNIT, FormatMoney(DEFAULT_MIN_RELAY_TX_FEE)), ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
     gArgs.AddArg("-whitelistforcerelay", strprintf("Add 'forcerelay' permission to whitelisted inbound peers with default permissions. This will relay transactions even if the transactions were already in the mempool or violate local relay policy. (default: %d)", DEFAULT_WHITELISTFORCERELAY), ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
-    gArgs.AddArg("-whitelistrelay", strprintf("Add 'relay' permission to whitelisted inbound peers with default permissions. The will accept relayed transactions even when not relaying transactions (default: %d)", DEFAULT_WHITELISTRELAY), ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
+    gArgs.AddArg("-whitelistrelay", strprintf("Add 'relay' permission to whitelisted inbound peers with default permissions. This will accept relayed transactions even when not relaying transactions (default: %d)", DEFAULT_WHITELISTRELAY), ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
 
 
     gArgs.AddArg("-blockmaxweight=<n>", strprintf("Set maximum BIP141 block weight (default: %d)", DEFAULT_BLOCK_MAX_WEIGHT), ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
@@ -534,6 +539,8 @@ void SetupServerArgs()
     gArgs.AddArg("-rpcservertimeout=<n>", strprintf("Timeout during HTTP requests (default: %d)", DEFAULT_HTTP_SERVER_TIMEOUT), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::RPC);
     gArgs.AddArg("-rpcthreads=<n>", strprintf("Set the number of threads to service RPC calls (default: %d)", DEFAULT_HTTP_THREADS), ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
     gArgs.AddArg("-rpcuser=<user>", "Username for JSON-RPC connections", ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    gArgs.AddArg("-rpcwhitelist=<whitelist>", "Set a whitelist to filter incoming RPC calls for a specific user. The field <whitelist> comes in the format: <USERNAME>:<rpc 1>,<rpc 2>,...,<rpc n>. If multiple whitelists are set for a given user, they are set-intersected. See -rpcwhitelistdefault documentation for information on default whitelist behavior.", ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    gArgs.AddArg("-rpcwhitelistdefault", "Sets default behavior for rpc whitelisting. Unless rpcwhitelistdefault is set to 0, if any -rpcwhitelist is set, the rpc server acts as if all rpc users are subject to empty-unless-otherwise-specified whitelists. If rpcwhitelistdefault is set to 1 and no -rpcwhitelist is set, rpc server acts as if all rpc users are subject to empty whitelists.", ArgsManager::ALLOW_BOOL, OptionsCategory::RPC);
     gArgs.AddArg("-rpcworkqueue=<n>", strprintf("Set the depth of the work queue to service RPC calls (default: %d)", DEFAULT_HTTP_WORKQUEUE), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::RPC);
     gArgs.AddArg("-server", "Accept command line and JSON-RPC commands", ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
 
@@ -846,7 +853,7 @@ int nUserMaxConnections;
 int nFD;
 ServiceFlags nLocalServices = ServiceFlags(NODE_NETWORK | NODE_NETWORK_LIMITED);
 int64_t peer_connect_timeout;
-std::vector<BlockFilterType> g_enabled_filter_types;
+std::set<BlockFilterType> g_enabled_filter_types;
 
 } // namespace
 
@@ -874,8 +881,8 @@ bool AppInitBasicSetup()
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 #endif
 #ifdef WIN32
-    // Enable Data Execution Prevention (DEP)
-    SetProcessDEPPolicy(PROCESS_DEP_ENABLE);
+    // Enable heap terminate-on-corruption
+    HeapSetInformation(nullptr, HeapEnableTerminationOnCorruption, nullptr, 0);
 #endif
 
     if (!SetupNetworking())
@@ -934,13 +941,12 @@ bool AppInitParameterInteraction()
         g_enabled_filter_types = AllBlockFilterTypes();
     } else if (blockfilterindex_value != "0") {
         const std::vector<std::string> names = gArgs.GetArgs("-blockfilterindex");
-        g_enabled_filter_types.reserve(names.size());
         for (const auto& name : names) {
             BlockFilterType filter_type;
             if (!BlockFilterTypeByName(name, filter_type)) {
                 return InitError(strprintf(_("Unknown -blockfilterindex value %s.").translated, name));
             }
-            g_enabled_filter_types.push_back(filter_type);
+            g_enabled_filter_types.insert(filter_type);
         }
     }
 
@@ -1262,7 +1268,6 @@ bool AppInitMain(NodeContext& node)
     }, 60000);
 
     GetMainSignals().RegisterBackgroundSignalScheduler(scheduler);
-    GetMainSignals().RegisterWithMempoolSignals(mempool);
 
     // Create client interfaces for wallets that are supposed to be loaded
     // according to -wallet and -disablewallet options. This only constructs
@@ -1353,7 +1358,7 @@ bool AppInitMain(NodeContext& node)
     SetReachable(NET_ONION, false);
     if (proxyArg != "" && proxyArg != "0") {
         CService proxyAddr;
-        if (!Lookup(proxyArg.c_str(), proxyAddr, 9050, fNameLookup)) {
+        if (!Lookup(proxyArg, proxyAddr, 9050, fNameLookup)) {
             return InitError(strprintf(_("Invalid -proxy address or hostname: '%s'").translated, proxyArg));
         }
 
@@ -1377,7 +1382,7 @@ bool AppInitMain(NodeContext& node)
             SetReachable(NET_ONION, false);
         } else {
             CService onionProxy;
-            if (!Lookup(onionArg.c_str(), onionProxy, 9050, fNameLookup)) {
+            if (!Lookup(onionArg, onionProxy, 9050, fNameLookup)) {
                 return InitError(strprintf(_("Invalid -onion address or hostname: '%s'").translated, onionArg));
             }
             proxyType addrOnion = proxyType(onionProxy, proxyRandomize);
@@ -1395,7 +1400,7 @@ bool AppInitMain(NodeContext& node)
 
     for (const std::string& strAddr : gArgs.GetArgs("-externalip")) {
         CService addrLocal;
-        if (Lookup(strAddr.c_str(), addrLocal, GetListenPort(), fNameLookup) && addrLocal.IsValid())
+        if (Lookup(strAddr, addrLocal, GetListenPort(), fNameLookup) && addrLocal.IsValid())
             AddLocal(addrLocal, LOCAL_MANUAL);
         else
             return InitError(ResolveErrMsg("externalip", strAddr));
@@ -1635,6 +1640,11 @@ bool AppInitMain(NodeContext& node)
         return false;
     }
 
+    // Now that the chain state is loaded, make mempool generally available in the node context. For example the
+    // connection manager, wallet, or RPC threads, which are all started after this, may use it from the node context.
+    assert(!node.mempool);
+    node.mempool = &::mempool;
+
     fs::path est_path = GetDataDir() / FEE_ESTIMATES_FILENAME;
     CAutoFile est_filein(fsbridge::fopen(est_path, "rb"), SER_DISK, CLIENT_VERSION);
     // Allowed to fail as this file IS missing on first startup.
@@ -1770,7 +1780,7 @@ bool AppInitMain(NodeContext& node)
 
     for (const std::string& strBind : gArgs.GetArgs("-bind")) {
         CService addrBind;
-        if (!Lookup(strBind.c_str(), addrBind, GetListenPort(), false)) {
+        if (!Lookup(strBind, addrBind, GetListenPort(), false)) {
             return InitError(ResolveErrMsg("bind", strBind));
         }
         connOptions.vBinds.push_back(addrBind);

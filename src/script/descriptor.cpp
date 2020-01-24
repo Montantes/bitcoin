@@ -1,4 +1,4 @@
-// Copyright (c) 2018 The Bitcoin Core developers
+// Copyright (c) 2018-2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -815,8 +815,8 @@ std::unique_ptr<DescriptorImpl> ParseScript(Span<const char>& sp, ParseScriptCon
             }
         }
         if (ctx == ParseScriptContext::P2SH) {
-            if (script_size + 3 > 520) {
-                error = strprintf("P2SH script is too large, %d bytes is larger than 520 bytes", script_size + 3);
+            if (script_size + 3 > MAX_SCRIPT_ELEMENT_SIZE) {
+                error = strprintf("P2SH script is too large, %d bytes is larger than %d bytes", script_size + 3, MAX_SCRIPT_ELEMENT_SIZE);
                 return nullptr;
             }
         }

@@ -1,4 +1,4 @@
-// Copyright (c) 2011-2018 The Bitcoin Core developers
+// Copyright (c) 2011-2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -8,7 +8,7 @@
 #include <net_types.h> // For banmap_t
 #include <qt/clientmodel.h>
 
-#include <algorithm>
+#include <utility>
 
 #include <QDebug>
 #include <QList>

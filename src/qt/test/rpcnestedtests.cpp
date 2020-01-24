@@ -1,4 +1,4 @@
-// Copyright (c) 2016-2018 The Bitcoin Core developers
+// Copyright (c) 2016-2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -32,7 +32,6 @@ void RPCNestedTests::rpcNestedTests()
     // do some test setup
     // could be moved to a more generic place when we add more tests on QT level
     tableRPC.appendCommand("rpcNestedTest", &vRPCCommands[0]);
-    //mempool.setSanityCheck(1.0);
 
     TestingSetup test;
 

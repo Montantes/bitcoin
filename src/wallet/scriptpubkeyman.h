@@ -1,4 +1,4 @@
-// Copyright (c) 2019 The Bitcoin Core developers
+// Copyright (c) 2019-2020 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -31,6 +31,8 @@ public:
     virtual void UnsetBlankWalletFlag(WalletBatch&) = 0;
     virtual bool CanSupportFeature(enum WalletFeature) const = 0;
     virtual void SetMinVersion(enum WalletFeature, WalletBatch* = nullptr, bool = false) = 0;
+    virtual const CKeyingMaterial& GetEncryptionKey() const = 0;
+    virtual bool HasEncryptionKeys() const = 0;
     virtual bool IsLocked() const = 0;
 };
 
@@ -150,10 +152,18 @@ public:
     virtual bool GetNewDestination(const OutputType type, CTxDestination& dest, std::string& error) { return false; }
     virtual isminetype IsMine(const CScript& script) const { return ISMINE_NO; }
 
-    virtual bool GetReservedDestination(const OutputType type, bool internal, int64_t& index, CKeyPool& keypool) { return false; }
-    virtual void KeepDestination(int64_t index) {}
-    virtual void ReturnDestination(int64_t index, bool internal, const CPubKey& pubkey) {}
+    //! Check that the given decryption key is valid for this ScriptPubKeyMan, i.e. it decrypts all of the keys handled by it.
+    virtual bool CheckDecryptionKey(const CKeyingMaterial& master_key, bool accept_no_keys = false) { return false; }
+    virtual bool Encrypt(const CKeyingMaterial& master_key, WalletBatch* batch) { return false; }
 
+    virtual bool GetReservedDestination(const OutputType type, bool internal, CTxDestination& address, int64_t& index, CKeyPool& keypool) { return false; }
+    virtual void KeepDestination(int64_t index, const OutputType& type) {}
+    virtual void ReturnDestination(int64_t index, bool internal, const CTxDestination& addr) {}
+
+    /** Fills internal address pool. Use within ScriptPubKeyMan implementations should be used sparingly and only
+      * when something from the address pool is removed, excluding GetNewDestination and GetReservedDestination.
+      * External wallet code is primarily responsible for topping up prior to fetching new addresses
+      */
     virtual bool TopUp(unsigned int size = 0) { return false; }
 
     //! Mark unused addresses as being used
@@ -193,6 +203,9 @@ public:
 class LegacyScriptPubKeyMan : public ScriptPubKeyMan, public FillableSigningProvider
 {
 private:
+    //! keeps track of whether Unlock has run a thorough check before
+    bool fDecryptionThoroughlyChecked = false;
+
     using WatchOnlySet = std::set<CScript>;
     using WatchKeyMap = std::map<CKeyID, CPubKey>;
 
@@ -246,9 +259,11 @@ private:
     std::set<int64_t> set_pre_split_keypool GUARDED_BY(cs_wallet);
     int64_t m_max_keypool_index GUARDED_BY(cs_wallet) = 0;
     std::map<CKeyID, int64_t> m_pool_key_to_index;
+    // Tracks keypool indexes to CKeyIDs of keys that have been taken out of the keypool but may be returned to it
+    std::map<int64_t, CKeyID> m_index_to_reserved_key;
 
     //! Fetches a key from the keypool
-    bool GetKeyFromPool(CPubKey &key, bool internal = false);
+    bool GetKeyFromPool(CPubKey &key, const OutputType type, bool internal = false);
 
     /**
      * Reserves a key from the keypool and sets nIndex to its index
@@ -266,19 +281,16 @@ private:
      */
     bool ReserveKeyFromKeyPool(int64_t& nIndex, CKeyPool& keypool, bool fRequestedInternal);
 
-    void KeepKey(int64_t nIndex);
-    void ReturnKey(int64_t nIndex, bool fInternal, const CPubKey& pubkey);
-
 public:
     bool GetNewDestination(const OutputType type, CTxDestination& dest, std::string& error) override;
     isminetype IsMine(const CScript& script) const override;
 
-    //! will encrypt previously unencrypted keys
-    bool EncryptKeys(CKeyingMaterial& vMasterKeyIn);
+    bool CheckDecryptionKey(const CKeyingMaterial& master_key, bool accept_no_keys = false) override;
+    bool Encrypt(const CKeyingMaterial& master_key, WalletBatch* batch) override;
 
-    bool GetReservedDestination(const OutputType type, bool internal, int64_t& index, CKeyPool& keypool) override;
-    void KeepDestination(int64_t index) override;
-    void ReturnDestination(int64_t index, bool internal, const CPubKey& pubkey) override;
+    bool GetReservedDestination(const OutputType type, bool internal, CTxDestination& address, int64_t& index, CKeyPool& keypool) override;
+    void KeepDestination(int64_t index, const OutputType& type) override;
+    void ReturnDestination(int64_t index, bool internal, const CTxDestination&) override;
 
     bool TopUp(unsigned int size = 0) override;
 
@@ -404,16 +416,11 @@ public:
     friend class CWallet;
     friend class ReserveDestination;
     LegacyScriptPubKeyMan(CWallet& wallet);
-    bool SetCrypted();
-    bool IsCrypted() const;
     void NotifyWatchonlyChanged(bool fHaveWatchOnly) const;
     void NotifyCanGetAddressesChanged() const;
     template<typename... Params> void WalletLogPrintf(const std::string& fmt, const Params&... parameters) const;
     CWallet& m_wallet;
-    CCriticalSection& cs_wallet;
-    CKeyingMaterial& vMasterKey GUARDED_BY(cs_KeyStore);
-    std::atomic<bool>& fUseCrypto;
-    bool& fDecryptionThoroughlyChecked;
+    RecursiveMutex& cs_wallet;
 };
 
 #endif // BITCOIN_WALLET_SCRIPTPUBKEYMAN_H

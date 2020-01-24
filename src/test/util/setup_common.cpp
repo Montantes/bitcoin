@@ -71,6 +71,7 @@ BasicTestingSetup::BasicTestingSetup(const std::string& chainName)
     SelectParams(chainName);
     SeedInsecureRand();
     gArgs.ForceSetArg("-printtoconsole", "0");
+    if (G_TEST_LOG_FUN) LogInstance().PushBackCallback(G_TEST_LOG_FUN);
     InitLogging();
     LogInstance().StartLogging();
     SHA256AutoDetect();
@@ -107,7 +108,6 @@ TestingSetup::TestingSetup(const std::string& chainName) : BasicTestingSetup(cha
     threadGroup.create_thread(std::bind(&CScheduler::serviceQueue, &scheduler));
     GetMainSignals().RegisterBackgroundSignalScheduler(scheduler);
 
-    mempool.setSanityCheck(1.0);
     pblocktree.reset(new CBlockTreeDB(1 << 20, true));
     g_chainstate = MakeUnique<CChainState>();
     ::ChainstateActive().InitCoinsDB(
@@ -131,6 +131,8 @@ TestingSetup::TestingSetup(const std::string& chainName) : BasicTestingSetup(cha
     }
     g_parallel_script_checks = true;
 
+    m_node.mempool = &::mempool;
+    m_node.mempool->setSanityCheck(1.0);
     m_node.banman = MakeUnique<BanMan>(GetDataDir() / "banlist.dat", nullptr, DEFAULT_MISBEHAVING_BANTIME);
     m_node.connman = MakeUnique<CConnman>(0x1337, 0x1337); // Deterministic randomness for tests.
 }
@@ -144,6 +146,7 @@ TestingSetup::~TestingSetup()
     g_rpc_node = nullptr;
     m_node.connman.reset();
     m_node.banman.reset();
+    m_node.mempool = nullptr;
     UnloadBlockIndex();
     g_chainstate.reset();
     pblocktree.reset();
@@ -173,7 +176,7 @@ TestChain100Setup::TestChain100Setup()
 CBlock TestChain100Setup::CreateAndProcessBlock(const std::vector<CMutableTransaction>& txns, const CScript& scriptPubKey)
 {
     const CChainParams& chainparams = Params();
-    std::unique_ptr<CBlockTemplate> pblocktemplate = BlockAssembler(chainparams).CreateNewBlock(scriptPubKey);
+    std::unique_ptr<CBlockTemplate> pblocktemplate = BlockAssembler(*m_node.mempool, chainparams).CreateNewBlock(scriptPubKey);
     CBlock& block = pblocktemplate->block;
 
     // Replace mempool-selected txns with just coinbase plus passed-in txns:

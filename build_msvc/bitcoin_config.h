@@ -1,3 +1,7 @@
+// Copyright (c) 2018-2019 The Bitcoin Core developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
 #ifndef BITCOIN_BITCOIN_CONFIG_H
 #define BITCOIN_BITCOIN_CONFIG_H
 
@@ -217,9 +221,6 @@
 
 /* Define to 1 if you have the `rpcrt4' library (-lrpcrt4). */
 #define HAVE_LIBRPCRT4 1
-
-/* Define to 1 if you have the `rt' library (-lrt). */
-/* #undef HAVE_LIBRT */
 
 /* Define to 1 if you have the `shell32' library (-lshell32). */
 #define HAVE_LIBSHELL32 1
