@@ -19,11 +19,11 @@
 #include <script/sign.h>
 #include <util/bip32.h>
 #include <util/fees.h>
+#include <util/message.h> // For MessageSign()
 #include <util/moneystr.h>
 #include <util/string.h>
 #include <util/system.h>
 #include <util/url.h>
-#include <util/validation.h>
 #include <wallet/coincontrol.h>
 #include <wallet/feebumper.h>
 #include <wallet/psbtwallet.h>
@@ -576,15 +576,13 @@ static UniValue signmessage(const JSONRPCRequest& request)
         throw JSONRPCError(RPC_WALLET_ERROR, "Private key not available");
     }
 
-    CHashWriter ss(SER_GETHASH, 0);
-    ss << strMessageMagic;
-    ss << strMessage;
+    std::string signature;
 
-    std::vector<unsigned char> vchSig;
-    if (!key.SignCompact(ss.GetHash(), vchSig))
+    if (!MessageSign(key, strMessage, signature)) {
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Sign failed");
+    }
 
-    return EncodeBase64(vchSig.data(), vchSig.size());
+    return signature;
 }
 
 static UniValue getreceivedbyaddress(const JSONRPCRequest& request)
@@ -972,8 +970,9 @@ static UniValue addmultisigaddress(const JSONRPCRequest& request)
                 },
                 RPCResult{
             "{\n"
-            "  \"address\":\"multisigaddress\",    (string) The value of the new multisig address.\n"
-            "  \"redeemScript\":\"script\"         (string) The string value of the hex-encoded redemption script.\n"
+            "  \"address\" : \"multisigaddress\",    (string) The value of the new multisig address.\n"
+            "  \"redeemScript\" : \"script\"         (string) The string value of the hex-encoded redemption script.\n"
+            "  \"descriptor\" : \"descriptor\"     (string) The descriptor for this multisig\n"
             "}\n"
                 },
                 RPCExamples{
@@ -1018,9 +1017,13 @@ static UniValue addmultisigaddress(const JSONRPCRequest& request)
     CTxDestination dest = AddAndGetMultisigDestination(required, pubkeys, output_type, spk_man, inner);
     pwallet->SetAddressBook(dest, label, "send");
 
+    // Make the descriptor
+    std::unique_ptr<Descriptor> descriptor = InferDescriptor(GetScriptForDestination(dest), spk_man);
+
     UniValue result(UniValue::VOBJ);
     result.pushKV("address", EncodeDestination(dest));
     result.pushKV("redeemScript", HexStr(inner.begin(), inner.end()));
+    result.pushKV("descriptor", descriptor->ToString());
     return result;
 }
 
@@ -1201,12 +1204,12 @@ static UniValue listreceivedbyaddress(const JSONRPCRequest& request)
                 RPCResult{
             "[\n"
             "  {\n"
-            "    \"involvesWatchonly\" : true,        (bool) Only returns true if imported addresses were involved in transaction.\n"
+            "    \"involvesWatchonly\" : true,        (boolean) Only returns true if imported addresses were involved in transaction.\n"
             "    \"address\" : \"receivingaddress\",  (string) The receiving address\n"
             "    \"amount\" : x.xxx,                  (numeric) The total amount in " + CURRENCY_UNIT + " received by the address\n"
             "    \"confirmations\" : n,               (numeric) The number of confirmations of the most recent transaction included\n"
             "    \"label\" : \"label\",               (string) The label of the receiving address. The default label is \"\".\n"
-            "    \"txids\": [\n"
+            "    \"txids\" : [\n"
             "       \"txid\",                         (string) The ids of transactions received with the address \n"
             "       ...\n"
             "    ]\n"
@@ -1251,7 +1254,7 @@ static UniValue listreceivedbylabel(const JSONRPCRequest& request)
                 RPCResult{
             "[\n"
             "  {\n"
-            "    \"involvesWatchonly\" : true,   (bool) Only returns true if imported addresses were involved in transaction.\n"
+            "    \"involvesWatchonly\" : true,   (boolean) Only returns true if imported addresses were involved in transaction.\n"
             "    \"amount\" : x.xxx,             (numeric) The total amount received by addresses with this label\n"
             "    \"confirmations\" : n,          (numeric) The number of confirmations of the most recent transaction included\n"
             "    \"label\" : \"label\"           (string) The label of the receiving address. The default label is \"\".\n"
@@ -1373,21 +1376,21 @@ static const std::string TransactionDescriptionString()
 {
     return "    \"confirmations\": n,                        (numeric) The number of confirmations for the transaction. Negative confirmations means the\n"
            "                                                       transaction conflicted that many blocks ago.\n"
-           "    \"generated\": xxx,                          (bool) Only present if transaction only input is a coinbase one.\n"
-           "    \"trusted\": xxx,                            (bool) Only present if we consider transaction to be trusted and so safe to spend from.\n"
-           "    \"blockhash\": \"hashvalue\",                  (string) The block hash containing the transaction.\n"
-           "    \"blockheight\": n,                          (numeric) The block height containing the transaction.\n"
-           "    \"blockindex\": n,                           (numeric) The index of the transaction in the block that includes it.\n"
-           "    \"blocktime\": xxx,                          (numeric) The block time expressed in " + UNIX_EPOCH_TIME + ".\n"
-           "    \"txid\": \"transactionid\",                   (string) The transaction id.\n"
-           "    \"walletconflicts\": [                       (array) Conflicting transaction ids.\n"
+           "    \"generated\" : xxx,                          (boolean) Only present if transaction only input is a coinbase one.\n"
+           "    \"trusted\" : xxx,                            (boolean) Only present if we consider transaction to be trusted and so safe to spend from.\n"
+           "    \"blockhash\" : \"hashvalue\",                  (string) The block hash containing the transaction.\n"
+           "    \"blockheight\" : n,                          (numeric) The block height containing the transaction.\n"
+           "    \"blockindex\" : n,                           (numeric) The index of the transaction in the block that includes it.\n"
+           "    \"blocktime\" : xxx,                          (numeric) The block time expressed in " + UNIX_EPOCH_TIME + ".\n"
+           "    \"txid\" : \"transactionid\",                   (string) The transaction id.\n"
+           "    \"walletconflicts\" : [                       (json array) Conflicting transaction ids.\n"
            "      \"txid\",                                  (string) The transaction id.\n"
            "      ...\n"
            "    ],\n"
-           "    \"time\": xxx,                               (numeric) The transaction time expressed in " + UNIX_EPOCH_TIME + ".\n"
-           "    \"timereceived\": xxx,                       (numeric) The time received expressed in " + UNIX_EPOCH_TIME + ".\n"
-           "    \"comment\": \"...\",                          (string) If a comment is associated with the transaction, only present if not empty.\n"
-           "    \"bip125-replaceable\": \"yes|no|unknown\",    (string) Whether this transaction could be replaced due to BIP125 (replace-by-fee);\n"
+           "    \"time\" : xxx,                               (numeric) The transaction time expressed in " + UNIX_EPOCH_TIME + ".\n"
+           "    \"timereceived\" : xxx,                       (numeric) The time received expressed in " + UNIX_EPOCH_TIME + ".\n"
+           "    \"comment\" : \"...\",                          (string) If a comment is associated with the transaction, only present if not empty.\n"
+           "    \"bip125-replaceable\" : \"str\",              (string) (\"yes|no|unknown\") Whether this transaction could be replaced due to BIP125 (replace-by-fee);\n"
            "                                                     may be unknown for unconfirmed transactions not in the mempool\n";
 }
 
@@ -1413,22 +1416,22 @@ UniValue listtransactions(const JSONRPCRequest& request)
                 RPCResult{
             "[\n"
             "  {\n"
-            "    \"involvesWatchonly\": xxx, (bool) Only returns true if imported addresses were involved in transaction.\n"
-            "    \"address\":\"address\",    (string) The bitcoin address of the transaction.\n"
-            "    \"category\":               (string) The transaction category.\n"
+            "    \"involvesWatchonly\" : xxx, (boolean) Only returns true if imported addresses were involved in transaction.\n"
+            "    \"address\" : \"address\",    (string) The bitcoin address of the transaction.\n"
+            "    \"category\" :               (string) The transaction category.\n"
             "                \"send\"                  Transactions sent.\n"
             "                \"receive\"               Non-coinbase transactions received.\n"
             "                \"generate\"              Coinbase transactions received with more than 100 confirmations.\n"
             "                \"immature\"              Coinbase transactions received with 100 or fewer confirmations.\n"
             "                \"orphan\"                Orphaned coinbase transactions received.\n"
-            "    \"amount\": x.xxx,          (numeric) The amount in " + CURRENCY_UNIT + ". This is negative for the 'send' category, and is positive\n"
+            "    \"amount\" : x.xxx,          (numeric) The amount in " + CURRENCY_UNIT + ". This is negative for the 'send' category, and is positive\n"
             "                                        for all other categories\n"
-            "    \"label\": \"label\",       (string) A comment for the address/transaction, if any\n"
-            "    \"vout\": n,                (numeric) the vout value\n"
-            "    \"fee\": x.xxx,             (numeric) The amount of the fee in " + CURRENCY_UNIT + ". This is negative and only available for the \n"
+            "    \"label\" : \"label\",       (string) A comment for the address/transaction, if any\n"
+            "    \"vout\" : n,                (numeric) the vout value\n"
+            "    \"fee\" : x.xxx,             (numeric) The amount of the fee in " + CURRENCY_UNIT + ". This is negative and only available for the \n"
             "                                         'send' category of transactions.\n"
             + TransactionDescriptionString()
-            + "    \"abandoned\": xxx          (bool) 'true' if the transaction has been abandoned (inputs are respendable). Only available for the \n"
+            + "    \"abandoned\": xxx          (boolean) 'true' if the transaction has been abandoned (inputs are respendable). Only available for the \n"
             "                                         'send' category of transactions.\n"
             "  }\n"
             "]\n"
@@ -1495,23 +1498,10 @@ UniValue listtransactions(const JSONRPCRequest& request)
     if ((nFrom + nCount) > (int)ret.size())
         nCount = ret.size() - nFrom;
 
-    std::vector<UniValue> arrTmp = ret.getValues();
-
-    std::vector<UniValue>::iterator first = arrTmp.begin();
-    std::advance(first, nFrom);
-    std::vector<UniValue>::iterator last = arrTmp.begin();
-    std::advance(last, nFrom+nCount);
-
-    if (last != arrTmp.end()) arrTmp.erase(last, arrTmp.end());
-    if (first != arrTmp.begin()) arrTmp.erase(arrTmp.begin(), first);
-
-    std::reverse(arrTmp.begin(), arrTmp.end()); // Return oldest to newest
-
-    ret.clear();
-    ret.setArray();
-    ret.push_backV(arrTmp);
-
-    return ret;
+    const std::vector<UniValue>& txs = ret.getValues();
+    UniValue result{UniValue::VARR};
+    result.push_backV({ txs.rend() - nFrom - nCount, txs.rend() - nFrom }); // Return oldest to newest
+    return result;
 }
 
 static UniValue listsinceblock(const JSONRPCRequest& request)
@@ -1535,31 +1525,33 @@ static UniValue listsinceblock(const JSONRPCRequest& request)
             "                                                           (not guaranteed to work on pruned nodes)"},
                 },
                 RPCResult{
-            "{\n"
-            "  \"transactions\": [\n"
-            "    \"involvesWatchonly\": xxx, (bool) Only returns true if imported addresses were involved in transaction.\n"
-            "    \"address\":\"address\",    (string) The bitcoin address of the transaction.\n"
-            "    \"category\":               (string) The transaction category.\n"
+            "{                             (json object)\n"
+            "  \"transactions\" : [          (json array)\n"
+            "  {                           (json object)\n"
+            "    \"involvesWatchonly\" : xxx, (boolean) Only returns true if imported addresses were involved in transaction.\n"
+            "    \"address\" : \"str\",        (string) The bitcoin address of the transaction.\n"
+            "    \"category\" : \"str\",       (string) The transaction category.\n"
             "                \"send\"                  Transactions sent.\n"
             "                \"receive\"               Non-coinbase transactions received.\n"
             "                \"generate\"              Coinbase transactions received with more than 100 confirmations.\n"
             "                \"immature\"              Coinbase transactions received with 100 or fewer confirmations.\n"
             "                \"orphan\"                Orphaned coinbase transactions received.\n"
-            "    \"amount\": x.xxx,          (numeric) The amount in " + CURRENCY_UNIT + ". This is negative for the 'send' category, and is positive\n"
+            "    \"amount\" : x.xxx,          (numeric) The amount in " + CURRENCY_UNIT + ". This is negative for the 'send' category, and is positive\n"
             "                                         for all other categories\n"
             "    \"vout\" : n,               (numeric) the vout value\n"
-            "    \"fee\": x.xxx,             (numeric) The amount of the fee in " + CURRENCY_UNIT + ". This is negative and only available for the 'send' category of transactions.\n"
+            "    \"fee\" : x.xxx,             (numeric) The amount of the fee in " + CURRENCY_UNIT + ". This is negative and only available for the 'send' category of transactions.\n"
             + TransactionDescriptionString()
-            + "    \"abandoned\": xxx,         (bool) 'true' if the transaction has been abandoned (inputs are respendable). Only available for the 'send' category of transactions.\n"
-            "    \"comment\": \"...\",       (string) If a comment is associated with the transaction.\n"
+            + "    \"abandoned\": xxx,         (boolean) 'true' if the transaction has been abandoned (inputs are respendable). Only available for the 'send' category of transactions.\n"
             "    \"label\" : \"label\"       (string) A comment for the address/transaction, if any\n"
-            "    \"to\": \"...\",            (string) If a comment to is associated with the transaction.\n"
+            "    \"to\" : \"...\",            (string) If a comment to is associated with the transaction.\n"
+            "   },\n"
+            "   ...\n"
             "  ],\n"
-            "  \"removed\": [\n"
+            "  \"removed\" : [              (json array)\n"
             "    <structure is the same as \"transactions\" above, only present if include_removed=true>\n"
             "    Note: transactions that were re-added in the active chain will appear as-is in this array, and may thus have a positive confirmation count.\n"
             "  ],\n"
-            "  \"lastblock\": \"lastblockhash\"     (string) The hash of the block (target_confirmations-1) from the best block on the main chain. This is typically used to feed back into listsinceblock the next time you call it. So you would generally use a target_confirmations of say 6, so you will be continually re-notified of transactions until they've reached 6 confirmations plus any new ones\n"
+            "  \"lastblock\" : \"hex\"        (string) The hash of the block (target_confirmations-1) from the best block on the main chain. This is typically used to feed back into listsinceblock the next time you call it. So you would generally use a target_confirmations of say 6, so you will be continually re-notified of transactions until they've reached 6 confirmations plus any new ones\n"
             "}\n"
                 },
                 RPCExamples{
@@ -1670,12 +1662,12 @@ static UniValue gettransaction(const JSONRPCRequest& request)
                 RPCResult{
             "{\n"
             "    \"amount\" : x.xxx,        (numeric) The transaction amount in " + CURRENCY_UNIT + "\n"
-            "    \"fee\": x.xxx,            (numeric) The amount of the fee in " + CURRENCY_UNIT + ". This is negative and only available for the \n"
+            "    \"fee\" : x.xxx,            (numeric) The amount of the fee in " + CURRENCY_UNIT + ". This is negative and only available for the \n"
             "                              'send' category of transactions.\n"
             + TransactionDescriptionString()
             + "    \"details\" : [\n"
             "      {\n"
-            "        \"involvesWatchonly\": xxx,         (bool) Only returns true if imported addresses were involved in transaction.\n"
+            "        \"involvesWatchonly\" : xxx,         (boolean) Only returns true if imported addresses were involved in transaction.\n"
             "        \"address\" : \"address\",          (string) The bitcoin address involved in the transaction\n"
             "        \"category\" :                      (string) The transaction category.\n"
             "                     \"send\"                  Transactions sent.\n"
@@ -1686,9 +1678,9 @@ static UniValue gettransaction(const JSONRPCRequest& request)
             "        \"amount\" : x.xxx,                 (numeric) The amount in " + CURRENCY_UNIT + "\n"
             "        \"label\" : \"label\",              (string) A comment for the address/transaction, if any\n"
             "        \"vout\" : n,                       (numeric) the vout value\n"
-            "        \"fee\": x.xxx,                     (numeric) The amount of the fee in " + CURRENCY_UNIT + ". This is negative and only available for the \n"
+            "        \"fee\" : x.xxx,                     (numeric) The amount of the fee in " + CURRENCY_UNIT + ". This is negative and only available for the \n"
             "                                           'send' category of transactions.\n"
-            "        \"abandoned\": xxx                  (bool) 'true' if the transaction has been abandoned (inputs are respendable). Only available for the \n"
+            "        \"abandoned\" : xxx                  (boolean) 'true' if the transaction has been abandoned (inputs are respendable). Only available for the \n"
             "                                           'send' category of transactions.\n"
             "      }\n"
             "      ,...\n"
@@ -2360,16 +2352,16 @@ static UniValue getbalances(const JSONRPCRequest& request)
         {},
         RPCResult{
             "{\n"
-            "    \"mine\": {                        (object) balances from outputs that the wallet can sign\n"
-            "      \"trusted\": xxx                 (numeric) trusted balance (outputs created by the wallet or confirmed outputs)\n"
-            "      \"untrusted_pending\": xxx       (numeric) untrusted pending balance (outputs created by others that are in the mempool)\n"
-            "      \"immature\": xxx                (numeric) balance from immature coinbase outputs\n"
-            "      \"used\": xxx                    (numeric) (only present if avoid_reuse is set) balance from coins sent to addresses that were previously spent from (potentially privacy violating)\n"
+            "    \"mine\" : {                        (json object) balances from outputs that the wallet can sign\n"
+            "      \"trusted\" : xxx                 (numeric) trusted balance (outputs created by the wallet or confirmed outputs)\n"
+            "      \"untrusted_pending\" : xxx       (numeric) untrusted pending balance (outputs created by others that are in the mempool)\n"
+            "      \"immature\" : xxx                (numeric) balance from immature coinbase outputs\n"
+            "      \"used\" : xxx                    (numeric) (only present if avoid_reuse is set) balance from coins sent to addresses that were previously spent from (potentially privacy violating)\n"
             "    },\n"
-            "    \"watchonly\": {                   (object) watchonly balances (not present if wallet does not watch anything)\n"
-            "      \"trusted\": xxx                 (numeric) trusted balance (outputs created by the wallet or confirmed outputs)\n"
-            "      \"untrusted_pending\": xxx       (numeric) untrusted pending balance (outputs created by others that are in the mempool)\n"
-            "      \"immature\": xxx                (numeric) balance from immature coinbase outputs\n"
+            "    \"watchonly\" : {                   (json object) watchonly balances (not present if wallet does not watch anything)\n"
+            "      \"trusted\" : xxx                 (numeric) trusted balance (outputs created by the wallet or confirmed outputs)\n"
+            "      \"untrusted_pending\" : xxx       (numeric) untrusted pending balance (outputs created by others that are in the mempool)\n"
+            "      \"immature\" : xxx                (numeric) balance from immature coinbase outputs\n"
             "    },\n"
             "}\n"},
         RPCExamples{
@@ -2426,21 +2418,21 @@ static UniValue getwalletinfo(const JSONRPCRequest& request)
                 {},
                 RPCResult{
             "{\n"
-            "  \"walletname\": xxxxx,               (string) the wallet name\n"
-            "  \"walletversion\": xxxxx,            (numeric) the wallet version\n"
-            "  \"balance\": xxxxxxx,                (numeric) DEPRECATED. Identical to getbalances().mine.trusted\n"
-            "  \"unconfirmed_balance\": xxx,        (numeric) DEPRECATED. Identical to getbalances().mine.untrusted_pending\n"
-            "  \"immature_balance\": xxxxxx,        (numeric) DEPRECATED. Identical to getbalances().mine.immature\n"
-            "  \"txcount\": xxxxxxx,                (numeric) the total number of transactions in the wallet\n"
-            "  \"keypoololdest\": xxxxxx,           (numeric) the " + UNIX_EPOCH_TIME + " of the oldest pre-generated key in the key pool\n"
-            "  \"keypoolsize\": xxxx,               (numeric) how many new keys are pre-generated (only counts external keys)\n"
-            "  \"keypoolsize_hd_internal\": xxxx,   (numeric) how many new keys are pre-generated for internal use (used for change outputs, only appears if the wallet is using this feature, otherwise external keys are used)\n"
-            "  \"unlocked_until\": ttt,             (numeric) the " + UNIX_EPOCH_TIME + " until which the wallet is unlocked for transfers, or 0 if the wallet is locked\n"
-            "  \"paytxfee\": x.xxxx,                (numeric) the transaction fee configuration, set in " + CURRENCY_UNIT + "/kB\n"
-            "  \"hdseedid\": \"<hash160>\"            (string, optional) the Hash160 of the HD seed (only present when HD is enabled)\n"
-            "  \"private_keys_enabled\": true|false (boolean) false if privatekeys are disabled for this wallet (enforced watch-only wallet)\n"
-            "  \"avoid_reuse\": true|false          (boolean) whether this wallet tracks clean/dirty coins in terms of reuse\n"
-            "  \"scanning\":                        (json object) current scanning details, or false if no scan is in progress\n"
+            "  \"walletname\" : xxxxx,               (string) the wallet name\n"
+            "  \"walletversion\" : xxxxx,            (numeric) the wallet version\n"
+            "  \"balance\" : xxxxxxx,                (numeric) DEPRECATED. Identical to getbalances().mine.trusted\n"
+            "  \"unconfirmed_balance\" : xxx,        (numeric) DEPRECATED. Identical to getbalances().mine.untrusted_pending\n"
+            "  \"immature_balance\" : xxxxxx,        (numeric) DEPRECATED. Identical to getbalances().mine.immature\n"
+            "  \"txcount\" : xxxxxxx,                (numeric) the total number of transactions in the wallet\n"
+            "  \"keypoololdest\" : xxxxxx,           (numeric) the " + UNIX_EPOCH_TIME + " of the oldest pre-generated key in the key pool\n"
+            "  \"keypoolsize\" : xxxx,               (numeric) how many new keys are pre-generated (only counts external keys)\n"
+            "  \"keypoolsize_hd_internal\" : xxxx,   (numeric) how many new keys are pre-generated for internal use (used for change outputs, only appears if the wallet is using this feature, otherwise external keys are used)\n"
+            "  \"unlocked_until\" : ttt,             (numeric) the " + UNIX_EPOCH_TIME + " until which the wallet is unlocked for transfers, or 0 if the wallet is locked\n"
+            "  \"paytxfee\" : x.xxxx,                (numeric) the transaction fee configuration, set in " + CURRENCY_UNIT + "/kB\n"
+            "  \"hdseedid\" : \"<hash160>\"            (string, optional) the Hash160 of the HD seed (only present when HD is enabled)\n"
+            "  \"private_keys_enabled\" : true|false (boolean) false if privatekeys are disabled for this wallet (enforced watch-only wallet)\n"
+            "  \"avoid_reuse\" : true|false          (boolean) whether this wallet tracks clean/dirty coins in terms of reuse\n"
+            "  \"scanning\" :                        (json object) current scanning details, or false if no scan is in progress\n"
             "    {\n"
             "      \"duration\" : xxxx              (numeric) elapsed seconds since scan start\n"
             "      \"progress\" : x.xxxx,           (numeric) scanning progress percentage [0.0, 1.0]\n"
@@ -2633,9 +2625,9 @@ static UniValue setwalletflag(const JSONRPCRequest& request)
                 },
                 RPCResult{
             "{\n"
-            "    \"flag_name\": string   (string) The name of the flag that was modified\n"
-            "    \"flag_state\": bool    (bool) The new state of the flag\n"
-            "    \"warnings\": string    (string) Any warnings associated with the change\n"
+            "    \"flag_name\" : string   (string) The name of the flag that was modified\n"
+            "    \"flag_state\" : bool    (boolean) The new state of the flag\n"
+            "    \"warnings\" : string    (string) Any warnings associated with the change\n"
             "}\n"
                 },
                 RPCExamples{
@@ -2832,11 +2824,11 @@ static UniValue listunspent(const JSONRPCRequest& request)
             "    \"confirmations\" : n,      (numeric) The number of confirmations\n"
             "    \"redeemScript\" : \"script\" (string) The redeemScript if scriptPubKey is P2SH\n"
             "    \"witnessScript\" : \"script\" (string) witnessScript if the scriptPubKey is P2WSH or P2SH-P2WSH\n"
-            "    \"spendable\" : xxx,        (bool) Whether we have the private keys to spend this output\n"
-            "    \"solvable\" : xxx,         (bool) Whether we know how to spend this output, ignoring the lack of keys\n"
-            "    \"reused\" : xxx,           (bool) (only present if avoid_reuse is set) Whether this output is reused/dirty (sent to an address that was previously spent from)\n"
+            "    \"spendable\" : xxx,        (boolean) Whether we have the private keys to spend this output\n"
+            "    \"solvable\" : xxx,         (boolean) Whether we know how to spend this output, ignoring the lack of keys\n"
+            "    \"reused\" : xxx,           (boolean) (only present if avoid_reuse is set) Whether this output is reused/dirty (sent to an address that was previously spent from)\n"
             "    \"desc\" : xxx,             (string, only when solvable) A descriptor for spending this output\n"
-            "    \"safe\" : xxx              (bool) Whether this output is considered safe to spend. Unconfirmed transactions\n"
+            "    \"safe\" : xxx              (boolean) Whether this output is considered safe to spend. Unconfirmed transactions\n"
             "                              from outside keys and unconfirmed replacement transactions are considered unsafe\n"
             "                              and are not eligible for spending by fundrawtransaction and sendtoaddress.\n"
             "  }\n"
@@ -2931,7 +2923,7 @@ static UniValue listunspent(const JSONRPCRequest& request)
         CTxDestination address;
         const CScript& scriptPubKey = out.tx->tx->vout[out.i].scriptPubKey;
         bool fValidAddress = ExtractDestination(scriptPubKey, address);
-        bool reused = avoid_reuse && pwallet->IsUsedDestination(out.tx->GetHash(), out.i);
+        bool reused = avoid_reuse && pwallet->IsSpentKey(out.tx->GetHash(), out.i);
 
         if (destinations.size() && (!fValidAddress || !destinations.count(address)))
             continue;
@@ -3180,9 +3172,9 @@ static UniValue fundrawtransaction(const JSONRPCRequest& request)
                 },
                 RPCResult{
                             "{\n"
-                            "  \"hex\":       \"value\", (string)  The resulting raw transaction (hex-encoded string)\n"
-                            "  \"fee\":       n,         (numeric) Fee in " + CURRENCY_UNIT + " the resulting transaction pays\n"
-                            "  \"changepos\": n          (numeric) The position of the added change output, or -1\n"
+                            "  \"hex\" :       \"value\", (string)  The resulting raw transaction (hex-encoded string)\n"
+                            "  \"fee\" :       n,         (numeric) Fee in " + CURRENCY_UNIT + " the resulting transaction pays\n"
+                            "  \"changepos\" : n          (numeric) The position of the added change output, or -1\n"
                             "}\n"
                                 },
                                 RPCExamples{
@@ -3369,11 +3361,11 @@ static UniValue bumpfee(const JSONRPCRequest& request)
                 },
                 RPCResult{
             "{\n"
-            "  \"psbt\":    \"psbt\",    (string) The base64-encoded unsigned PSBT of the new transaction. Only returned when wallet private keys are disabled.\n"
-            "  \"txid\":    \"value\",   (string) The id of the new transaction. Only returned when wallet private keys are enabled.\n"
-            "  \"origfee\":  n,        (numeric) The fee of the replaced transaction.\n"
-            "  \"fee\":      n,        (numeric) The fee of the new transaction.\n"
-            "  \"errors\":  [ str... ] (json array of strings) Errors encountered during processing (may be empty).\n"
+            "  \"psbt\" :    \"psbt\",    (string) The base64-encoded unsigned PSBT of the new transaction. Only returned when wallet private keys are disabled.\n"
+            "  \"txid\" :    \"value\",   (string) The id of the new transaction. Only returned when wallet private keys are enabled.\n"
+            "  \"origfee\" :  n,        (numeric) The fee of the replaced transaction.\n"
+            "  \"fee\" :      n,        (numeric) The fee of the new transaction.\n"
+            "  \"errors\" :  [ str... ] (json array of strings) Errors encountered during processing (may be empty).\n"
             "}\n"
                 },
                 RPCExamples{
@@ -3730,8 +3722,6 @@ UniValue getaddressinfo(const JSONRPCRequest& request)
         return NullUniValue;
     }
 
-    const std::string example_address = "\"bc1q09vm5lfy0j5reeulh4x5752q25uqqvz34hufdl\"";
-
             RPCHelpMan{"getaddressinfo",
                 "\nReturn information about the given bitcoin address.\n"
                 "Some of the information will only be present if the address is in the active wallet.\n",
@@ -3766,26 +3756,26 @@ UniValue getaddressinfo(const JSONRPCRequest& request)
             "                                                         getaddressinfo output fields for the embedded address, excluding metadata (timestamp, hdkeypath,\n"
             "                                                         hdseedid) and relation to the wallet (ismine, iswatchonly).\n"
             "  \"iscompressed\" : true|false,        (boolean, optional) If the pubkey is compressed.\n"
-            "  \"label\" :  \"label\"                  (string) The label associated with the address. Defaults to \"\". Equivalent to the label name in the labels array below.\n"
+            "  \"label\" :  \"label\"                  (string) DEPRECATED. The label associated with the address. Defaults to \"\". Replaced by the labels array below.\n"
             "  \"timestamp\" : timestamp,            (number, optional) The creation time of the key, if available, expressed in " + UNIX_EPOCH_TIME + ".\n"
             "  \"hdkeypath\" : \"keypath\"             (string, optional) The HD keypath, if the key is HD and available.\n"
             "  \"hdseedid\" : \"<hash160>\"            (string, optional) The Hash160 of the HD seed.\n"
             "  \"hdmasterfingerprint\" : \"<hash160>\" (string, optional) The fingerprint of the master key.\n"
-            "  \"labels\"                            (json object) An array of labels associated with the address. Currently limited to one label but returned\n"
-            "                                               as an array to keep the API stable if multiple labels are enabled in the future.\n"
+            "  \"labels\"                            (json array) Array of labels associated with the address. Currently limited to one label but returned\n"
+            "                                              as an array to keep the API stable if multiple labels are enabled in the future.\n"
             "    [\n"
-            "      \"label name\" (string) The label name. Defaults to \"\". Equivalent to the label field above.\n\n"
+            "      \"label name\" (string) The label name. Defaults to \"\".\n"
             "      DEPRECATED, will be removed in 0.21. To re-enable, launch bitcoind with `-deprecatedrpc=labelspurpose`:\n"
-            "      { (json object of label data)\n"
-            "        \"name\" : \"label name\" (string) The label name. Defaults to \"\". Equivalent to the label field above.\n"
+            "      {\n"
+            "        \"name\" : \"label name\" (string) The label name. Defaults to \"\".\n"
             "        \"purpose\" : \"purpose\" (string) The purpose of the associated address (send or receive).\n"
             "      }\n"
             "    ]\n"
             "}\n"
                 },
                 RPCExamples{
-                    HelpExampleCli("getaddressinfo", example_address) +
-                    HelpExampleRpc("getaddressinfo", example_address)
+                    HelpExampleCli("getaddressinfo", EXAMPLE_ADDRESS) +
+                    HelpExampleRpc("getaddressinfo", EXAMPLE_ADDRESS)
                 },
             }.Check(request);
 
@@ -3821,10 +3811,10 @@ UniValue getaddressinfo(const JSONRPCRequest& request)
     UniValue detail = DescribeWalletAddress(pwallet, dest);
     ret.pushKVs(detail);
 
-    // Return label field if existing. Currently only one label can be
-    // associated with an address, so the label should be equivalent to the
+    // DEPRECATED: Return label field if existing. Currently only one label can
+    // be associated with an address, so the label should be equivalent to the
     // value of the name key/value pair in the labels array below.
-    if (pwallet->mapAddressBook.count(dest)) {
+    if ((pwallet->chain().rpcEnableDeprecated("label")) && (pwallet->mapAddressBook.count(dest))) {
         ret.pushKV("label", pwallet->mapAddressBook[dest].name);
     }
 
@@ -3847,12 +3837,11 @@ UniValue getaddressinfo(const JSONRPCRequest& request)
     // associated with an address, but we return an array so the API remains
     // stable if we allow multiple labels to be associated with an address in
     // the future.
-    //
-    // DEPRECATED: The previous behavior of returning an array containing a JSON
-    // object of `name` and `purpose` key/value pairs has been deprecated.
     UniValue labels(UniValue::VARR);
     std::map<CTxDestination, CAddressBookData>::iterator mi = pwallet->mapAddressBook.find(dest);
     if (mi != pwallet->mapAddressBook.end()) {
+        // DEPRECATED: The previous behavior of returning an array containing a
+        // JSON object of `name` and `purpose` key/value pairs is deprecated.
         if (pwallet->chain().rpcEnableDeprecated("labelspurpose")) {
             labels.push_back(AddressBookDataToJSON(mi->second, true));
         } else {
@@ -3880,8 +3869,8 @@ static UniValue getaddressesbylabel(const JSONRPCRequest& request)
                 },
                 RPCResult{
             "{ (json object with addresses as keys)\n"
-            "  \"address\": { (json object with information about address)\n"
-            "    \"purpose\": \"string\" (string)  Purpose of address (\"send\" for sending address, \"receive\" for receiving address)\n"
+            "  \"address\" : { (json object with information about address)\n"
+            "    \"purpose\" : \"string\" (string)  Purpose of address (\"send\" for sending address, \"receive\" for receiving address)\n"
             "  },...\n"
             "}\n"
                 },
@@ -4077,13 +4066,12 @@ UniValue walletprocesspsbt(const JSONRPCRequest& request)
             "       \"ALL|ANYONECANPAY\"\n"
             "       \"NONE|ANYONECANPAY\"\n"
             "       \"SINGLE|ANYONECANPAY\""},
-                    {"bip32derivs", RPCArg::Type::BOOL, /* default */ "false", "If true, includes the BIP 32 derivation paths for public keys if we know them"},
+                    {"bip32derivs", RPCArg::Type::BOOL, /* default */ "true", "Include BIP 32 derivation paths for public keys if we know them"},
                 },
                 RPCResult{
-            "{\n"
-            "  \"psbt\" : \"value\",          (string) The base64-encoded partially signed transaction\n"
+            "{                            (json object)\n"
+            "  \"psbt\" : \"str\",            (string) The base64-encoded partially signed transaction\n"
             "  \"complete\" : true|false,   (boolean) If the transaction has a complete set of signatures\n"
-            "  ]\n"
             "}\n"
                 },
                 RPCExamples{
@@ -4105,7 +4093,7 @@ UniValue walletprocesspsbt(const JSONRPCRequest& request)
 
     // Fill transaction with our data and also sign
     bool sign = request.params[1].isNull() ? true : request.params[1].get_bool();
-    bool bip32derivs = request.params[3].isNull() ? false : request.params[3].get_bool();
+    bool bip32derivs = request.params[3].isNull() ? true : request.params[3].get_bool();
     bool complete = true;
     const TransactionError err = FillPSBT(pwallet, psbtx, complete, nHashType, sign, bip32derivs);
     if (err != TransactionError::OK) {
@@ -4188,13 +4176,13 @@ UniValue walletcreatefundedpsbt(const JSONRPCRequest& request)
                             "         \"CONSERVATIVE\""},
                         },
                         "options"},
-                    {"bip32derivs", RPCArg::Type::BOOL, /* default */ "false", "If true, includes the BIP 32 derivation paths for public keys if we know them"},
+                    {"bip32derivs", RPCArg::Type::BOOL, /* default */ "true", "Include BIP 32 derivation paths for public keys if we know them"},
                 },
                 RPCResult{
                             "{\n"
-                            "  \"psbt\": \"value\",        (string)  The resulting raw transaction (base64-encoded string)\n"
-                            "  \"fee\":       n,         (numeric) Fee in " + CURRENCY_UNIT + " the resulting transaction pays\n"
-                            "  \"changepos\": n          (numeric) The position of the added change output, or -1\n"
+                            "  \"psbt\" : \"value\",        (string)  The resulting raw transaction (base64-encoded string)\n"
+                            "  \"fee\" :       n,         (numeric) Fee in " + CURRENCY_UNIT + " the resulting transaction pays\n"
+                            "  \"changepos\" : n          (numeric) The position of the added change output, or -1\n"
                             "}\n"
                                 },
                                 RPCExamples{
@@ -4227,7 +4215,7 @@ UniValue walletcreatefundedpsbt(const JSONRPCRequest& request)
     PartiallySignedTransaction psbtx(rawTx);
 
     // Fill transaction with out data but don't sign
-    bool bip32derivs = request.params[4].isNull() ? false : request.params[4].get_bool();
+    bool bip32derivs = request.params[4].isNull() ? true : request.params[4].get_bool();
     bool complete = true;
     const TransactionError err = FillPSBT(pwallet, psbtx, complete, 1, false, bip32derivs);
     if (err != TransactionError::OK) {
